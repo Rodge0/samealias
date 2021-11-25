@@ -3,6 +3,7 @@ package samealias
 import (
 	"fmt"
 	"go/ast"
+	"go/types"
 	"strconv"
 	"strings"
 
@@ -63,7 +64,8 @@ func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
 					End:     node.End(),
 					Message: message,
 					SuggestedFixes: []analysis.SuggestedFix{{
-						Message: "Use same alias or do not use alias",
+						Message:   "Use same alias or do not use alias",
+						TextEdits: findEdits(node, pass.TypesInfo.Uses, path, alias, val),
 					}},
 				})
 			}
@@ -71,4 +73,50 @@ func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
 			imports[path] = alias
 		}
 	}
+}
+
+func findEdits(node ast.Node, uses map[*ast.Ident]types.Object, importPath, original, required string) []analysis.TextEdit {
+	// Edit the actual import line.
+	importLine := strconv.Quote(importPath)
+	if required != "" {
+		importLine = required + " " + importLine
+	}
+	result := []analysis.TextEdit{{
+		Pos:     node.Pos(),
+		End:     node.End(),
+		NewText: []byte(importLine),
+	}}
+
+	packageReplacement := required
+	if required == "" {
+		packageParts := strings.Split(importPath, "/")
+		if len(packageParts) != 0 {
+			packageReplacement = packageParts[len(packageParts)-1]
+		} else {
+			// fall back to original
+			packageReplacement = original
+		}
+	}
+
+	// Edit all the uses of the alias in the code.
+	for use, pkg := range uses {
+		pkgName, ok := pkg.(*types.PkgName)
+		if !ok {
+			// skip identifiers that aren't pointing at a PkgName.
+			continue
+		}
+
+		if pkgName.Pos() != node.Pos() {
+			// skip identifiers pointing to a different import statement.
+			continue
+		}
+
+		result = append(result, analysis.TextEdit{
+			Pos:     use.Pos(),
+			End:     use.End(),
+			NewText: []byte(packageReplacement),
+		})
+	}
+
+	return result
 }
