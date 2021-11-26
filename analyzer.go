@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"go/ast"
-	"go/types"
 	"os"
 	"strconv"
 	"strings"
@@ -45,16 +44,19 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// p("filename --------- ", filename.Filename)
 
 	//if handlePath(filename.String()) {
-	if res, err := isAutogenFile(filename.Filename); res && err == nil {
-		p(filename.Filename, "test file, no need handle")
-	} else {
-		p(filename.Filename, "not test file, need handle")
+	res, err := isAutogenFile(filename.Filename)
+	if err != nil {
+		panic(err)
+	} else if !res {
+		p(filename.Filename, "not autogen file, need handle")
 		// p("run: <pass.Fset> - ", pass.Fset) //&{{{0 0} 0 0 0 0} 4326435 [0xc000467c20 0xc0004e88a0 0xc0004e8a20 0xc0004e9380 0xc0004e9e60 0xc000288420 0xc0002884e0 0xc000288660 0xc00028878 .....
 
 		inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 		inspect.Preorder([]ast.Node{(*ast.ImportSpec)(nil)}, func(n ast.Node) {
 			visitImportSpecNode(n.(*ast.ImportSpec), pass)
 		})
+	} else {
+		p(filename.Filename, "autogen file, no need handle")
 	}
 	return nil, nil
 }
@@ -166,8 +168,7 @@ func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
 					End:     node.End(),
 					Message: message,
 					SuggestedFixes: []analysis.SuggestedFix{{
-						Message:   "Use same alias or do not use alias",
-						TextEdits: findEdits(node, pass.TypesInfo.Uses, path, alias, val),
+						Message: "Use same alias or do not use alias",
 					}},
 				})
 			}
@@ -175,50 +176,4 @@ func visitImportSpecNode(node *ast.ImportSpec, pass *analysis.Pass) {
 			imports[path] = alias
 		}
 	}
-}
-
-func findEdits(node ast.Node, uses map[*ast.Ident]types.Object, importPath, original, required string) []analysis.TextEdit {
-	// Edit the actual import line.
-	importLine := strconv.Quote(importPath)
-	if required != "" {
-		importLine = required + " " + importLine
-	}
-	result := []analysis.TextEdit{{
-		Pos:     node.Pos(),
-		End:     node.End(),
-		NewText: []byte(importLine),
-	}}
-
-	packageReplacement := required
-	if required == "" {
-		packageParts := strings.Split(importPath, "/")
-		if len(packageParts) != 0 {
-			packageReplacement = packageParts[len(packageParts)-1]
-		} else {
-			// fall back to original
-			packageReplacement = original
-		}
-	}
-
-	// Edit all the uses of the alias in the code.
-	for use, pkg := range uses {
-		pkgName, ok := pkg.(*types.PkgName)
-		if !ok {
-			// skip identifiers that aren't pointing at a PkgName.
-			continue
-		}
-
-		if pkgName.Pos() != node.Pos() {
-			// skip identifiers pointing to a different import statement.
-			continue
-		}
-
-		result = append(result, analysis.TextEdit{
-			Pos:     use.Pos(),
-			End:     use.End(),
-			NewText: []byte(packageReplacement),
-		})
-	}
-
-	return result
 }
